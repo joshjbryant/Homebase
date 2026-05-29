@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     }
 
     case 'checkout.session.completed': {
-      const session = event.data.object as Stripe.CheckoutSession
+      const session = event.data.object as Stripe.Checkout.Session
       const householdId = session.metadata?.household_id
       const customerId = session.customer as string
       if (!householdId) break
