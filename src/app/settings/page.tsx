@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import AppLayout from '@/components/layout/AppLayout'
 import { useHousehold } from '@/hooks/useHomebase'
 import { createClient } from '@/lib/supabase/client'
-import { CreditCard, LogOut, Copy, Check } from 'lucide-react'
+import { CreditCard, LogOut, Copy, Check, Eye, Trash2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
 const THRESHOLD_OPTIONS = [0, 25, 50, 100, 250, 500]
@@ -12,16 +12,18 @@ export default function SettingsPage() {
   const supabase = createClient()
   const router   = useRouter()
   const { members, currentMember, householdId } = useHousehold()
-  const [household, setHousehold]         = useState<{ subscription_status: string; trial_ends_at: string | null; payment_threshold: number } | null>(null)
-  const [inviteLink, setInviteLink]       = useState('')
-  const [copied, setCopied]               = useState(false)
-  const [portalLoading, setPortalLoading] = useState(false)
-  const [venmoHandle, setVenmoHandle]     = useState('')
-  const [venmoSaved, setVenmoSaved]       = useState(false)
-  const [savingVenmo, setSavingVenmo]     = useState(false)
-  const [threshold, setThreshold]         = useState<number>(50)
+  const [household, setHousehold]           = useState<any>(null)
+  const [viewers, setViewers]               = useState<any[]>([])
+  const [inviteLink, setInviteLink]         = useState('')
+  const [viewerInviteLink, setViewerInviteLink] = useState('')
+  const [copied, setCopied]                 = useState('')
+  const [portalLoading, setPortalLoading]   = useState(false)
+  const [venmoHandle, setVenmoHandle]       = useState('')
+  const [venmoSaved, setVenmoSaved]         = useState(false)
+  const [savingVenmo, setSavingVenmo]       = useState(false)
+  const [threshold, setThreshold]           = useState<number>(50)
   const [savingThreshold, setSavingThreshold] = useState(false)
-  const [thresholdSaved, setThresholdSaved]   = useState(false)
+  const [thresholdSaved, setThresholdSaved] = useState(false)
 
   useEffect(() => {
     if (!householdId) return
@@ -29,11 +31,14 @@ export default function SettingsPage() {
       .select('subscription_status, trial_ends_at, payment_threshold')
       .eq('id', householdId).single()
       .then(({ data }) => {
-        if (data) {
-          setHousehold(data)
-          setThreshold(data.payment_threshold ?? 50)
-        }
+        if (data) { setHousehold(data); setThreshold(data.payment_threshold ?? 50) }
       })
+    // Load viewers
+    supabase.from('household_members')
+      .select('*')
+      .eq('household_id', householdId)
+      .eq('role', 'viewer')
+      .then(({ data }) => setViewers(data || []))
   }, [householdId])
 
   useEffect(() => {
@@ -61,19 +66,28 @@ export default function SettingsPage() {
     setTimeout(() => setThresholdSaved(false), 2000)
   }
 
-  async function generateInvite() {
+  async function generateInvite(role: 'member' | 'viewer') {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user || !householdId) return
     const { data } = await supabase.from('invite_tokens')
-      .insert({ household_id: householdId, created_by: user.id })
+      .insert({ household_id: householdId, created_by: user.id, role })
       .select('token').single()
-    if (data) setInviteLink(`${window.location.origin}/auth/invite?token=${data.token}`)
+    if (data) {
+      const link = `${window.location.origin}/auth/invite?token=${data.token}`
+      if (role === 'member') setInviteLink(link)
+      else setViewerInviteLink(link)
+    }
   }
 
-  async function copyInvite() {
-    await navigator.clipboard.writeText(inviteLink)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  async function copyLink(link: string, key: string) {
+    await navigator.clipboard.writeText(link)
+    setCopied(key)
+    setTimeout(() => setCopied(''), 2000)
+  }
+
+  async function removeViewer(memberId: string) {
+    await supabase.from('household_members').delete().eq('id', memberId)
+    setViewers(prev => prev.filter(v => v.id !== memberId))
   }
 
   async function openBillingPortal() {
@@ -88,6 +102,8 @@ export default function SettingsPage() {
     await supabase.auth.signOut()
     router.push('/auth/login')
   }
+
+  const coParents = members.filter(m => m.role !== 'viewer')
 
   const statusLabel: Record<string, { label: string; color: string }> = {
     trialing: { label: 'Free trial',  color: 'text-blue-600 bg-blue-50' },
@@ -118,11 +134,95 @@ export default function SettingsPage() {
           )}
         </div>
 
-        {/* Payment settings */}
+        {/* Co-parents */}
+        <div className="card p-4 mb-3">
+          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Co-parents</div>
+          <div className="space-y-3">
+            {coParents.map(m => (
+              <div key={m.id} className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold"
+                  style={{ background: m.color }}>
+                  {m.display_name[0].toUpperCase()}
+                </div>
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-gray-900">{m.display_name}</div>
+                  <div className="text-xs text-gray-400 flex items-center gap-1">
+                    {m.role === 'owner' ? 'Owner' : 'Co-parent'}
+                    {(m as any).venmo_handle && <span className="ml-2 text-[#008CFF]">@{(m as any).venmo_handle}</span>}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {coParents.length < 2 && (
+              <div className="pt-1">
+                <div className="text-xs text-gray-500 mb-2">Your co-parent hasn't joined yet.</div>
+                {!inviteLink ? (
+                  <button onClick={() => generateInvite('member')} className="btn-secondary text-xs w-full py-2">
+                    Generate co-parent invite
+                  </button>
+                ) : (
+                  <div className="flex gap-2">
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 font-mono flex-1 truncate">{inviteLink}</div>
+                    <button onClick={() => copyLink(inviteLink, 'coparent')} className="text-sage-600 px-2">
+                      {copied === 'coparent' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Family viewers */}
+        <div className="card p-4 mb-3">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Family viewers</div>
+            <div className="flex items-center gap-1 bg-blue-50 text-blue-600 text-xs px-2 py-0.5 rounded-full">
+              <Eye className="w-3 h-3" /> Read-only
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mb-3">
+            Grandparents, step-parents, or others who can view the calendar and schedule but not expenses or messages.
+          </p>
+
+          {viewers.length > 0 && (
+            <div className="space-y-2 mb-3">
+              {viewers.map(v => (
+                <div key={v.id} className="flex items-center gap-3 py-1.5">
+                  <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs font-semibold">
+                    {v.display_name[0].toUpperCase()}
+                  </div>
+                  <div className="flex-1 text-sm text-gray-900">{v.display_name}</div>
+                  <button onClick={() => removeViewer(v.id)} className="text-gray-300 hover:text-red-400 transition-colors">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!viewerInviteLink ? (
+            <button onClick={() => generateInvite('viewer')} className="btn-secondary text-xs w-full py-2">
+              <Eye className="w-3.5 h-3.5" /> Generate viewer invite
+            </button>
+          ) : (
+            <div>
+              <div className="text-xs text-gray-500 mb-1.5">Share this link — it grants read-only calendar access:</div>
+              <div className="flex gap-2">
+                <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 font-mono flex-1 truncate">{viewerInviteLink}</div>
+                <button onClick={() => copyLink(viewerInviteLink, 'viewer')} className="text-sage-600 px-2">
+                  {copied === 'viewer' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mt-1.5">Link expires in 7 days · single use</p>
+            </div>
+          )}
+        </div>
+
+        {/* Payment */}
         <div className="card p-4 mb-3">
           <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Payment</div>
-
-          {/* Venmo handle */}
           <div className="mb-4">
             <label className="block text-xs font-medium text-gray-600 mb-1.5">Your Venmo username</label>
             <div className="text-xs text-gray-400 mb-2">So your co-parent can pay you directly from the Expenses tab.</div>
@@ -137,69 +237,22 @@ export default function SettingsPage() {
               </button>
             </div>
           </div>
-
-          {/* Payment threshold */}
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1.5">
               Payment threshold
               {thresholdSaved && <span className="ml-2 text-green-600">✓ Saved</span>}
             </label>
-            <div className="text-xs text-gray-400 mb-2">
-              The Venmo button activates when the balance reaches this amount. Set to $0 to always show it.
-            </div>
+            <div className="text-xs text-gray-400 mb-2">Venmo button activates when balance reaches this amount.</div>
             <div className="flex gap-2 flex-wrap">
               {THRESHOLD_OPTIONS.map(opt => (
-                <button key={opt} type="button"
-                  onClick={() => saveThreshold(opt)}
-                  disabled={savingThreshold}
+                <button key={opt} type="button" onClick={() => saveThreshold(opt)} disabled={savingThreshold}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                    threshold === opt
-                      ? 'bg-sage-50 border-sage-300 text-sage-700'
-                      : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                    threshold === opt ? 'bg-sage-50 border-sage-300 text-sage-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
                   }`}>
                   {opt === 0 ? 'Always' : `$${opt}`}
                 </button>
               ))}
             </div>
-          </div>
-        </div>
-
-        {/* Household */}
-        <div className="card p-4 mb-3">
-          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Household</div>
-          <div className="space-y-3">
-            {members.map(m => (
-              <div key={m.id} className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold"
-                  style={{ background: m.color }}>
-                  {m.display_name[0].toUpperCase()}
-                </div>
-                <div className="flex-1">
-                  <div className="text-sm font-medium text-gray-900">{m.display_name}</div>
-                  <div className="text-xs text-gray-400 flex items-center gap-1">
-                    {m.role === 'owner' ? 'Owner' : 'Co-parent'}
-                    {(m as any).venmo_handle && (
-                      <span className="ml-2 text-[#008CFF]">@{(m as any).venmo_handle}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {members.length < 2 && (
-              <div className="pt-1">
-                <div className="text-xs text-gray-500 mb-2">Your co-parent hasn't joined yet.</div>
-                {!inviteLink ? (
-                  <button onClick={generateInvite} className="btn-secondary text-xs w-full py-2">Generate invite link</button>
-                ) : (
-                  <div className="flex gap-2">
-                    <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 font-mono flex-1 truncate">{inviteLink}</div>
-                    <button onClick={copyInvite} className="text-sage-600 px-2">
-                      {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         </div>
 
