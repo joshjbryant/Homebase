@@ -52,7 +52,7 @@ export default function SignupPage() {
       .single()
 
     if (hhError || !household) {
-      setError('Failed to create your household. Please contact support.')
+      setError(`Household error: ${hhError?.message || 'unknown error'}`)
       setLoading(false)
       return
     }
